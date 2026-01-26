@@ -1,0 +1,29 @@
+services:
+  consul-registrator:
+    build:
+      context: ../
+      dockerfile: ./test/Dockerfile
+    container_name: consul-registrator
+    restart: unless-stopped
+    environment:
+      CONSUL_HTTP_ADDR: http://consul:8500
+      CONSUL_HTTP_TOKEN: ${CONSUL_HTTP_TOKEN:-}
+      STATE_PATH: /data/state.json
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - consul-registrator-data:/data
+    ports:
+      - "9090:9090"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      consul:
+        condition: service_healthy
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  consul-registrator-data:

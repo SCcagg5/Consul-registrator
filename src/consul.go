@@ -117,3 +117,46 @@ func (c *ConsulClient) do(ctx context.Context, method, path string, q url.Values
 
 	return nil
 }
+
+/// AgentServiceInfo represents a service returned by /v1/agent/services.
+type AgentServiceInfo struct {
+	ID        string            `json:"ID"`
+	Service   string            `json:"Service"`
+	Namespace string            `json:"Namespace"`
+	Partition string            `json:"Partition"`
+	Meta      map[string]string `json:"Meta"`
+}
+
+/// AgentServices returns all services known to the local Consul agent.
+func (c *ConsulClient) AgentServices(ctx context.Context) (map[string]AgentServiceInfo, error) {
+	if c.dryRun {
+		return map[string]AgentServiceInfo{}, nil
+	}
+
+	u := c.base + "/v1/agent/services"
+	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.token != "" {
+		req.Header.Set("X-Consul-Token", c.token)
+	}
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return nil, http.ErrUseLastResponse
+	}
+
+	var out map[string]AgentServiceInfo
+	err = json.NewDecoder(resp.Body).Decode(&out)
+	if err != nil {
+		return nil, err
+	}
+
+	return out, nil
+}

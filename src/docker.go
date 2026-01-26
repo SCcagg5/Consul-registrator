@@ -97,3 +97,21 @@ func (d *DockerClient) do(ctx context.Context, method, path string, q url.Values
 
 	return d.client.Do(req)
 }
+
+/// ContainerExists returns whether a container can be inspected successfully.
+func (d *DockerClient) ContainerExists(ctx context.Context, id string) (bool, error) {
+	resp, err := d.do(ctx, "GET", "/containers/"+id+"/json", nil)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 404 {
+		return false, nil
+	}
+	if resp.StatusCode >= 400 {
+		return false, http.ErrUseLastResponse
+	}
+
+	return true, nil
+}

@@ -6,6 +6,7 @@ import (
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclparse"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
+	"github.com/zclconf/go-cty/cty"
 )
 
 /// ParseServiceHCL parses a Docker label containing a single Consul service block.
@@ -46,7 +47,8 @@ func hclBodyToMap(body *hclsyntax.Body) (map[string]any, error) {
 		if diags.HasErrors() {
 			return nil, fmt.Errorf(diags.Error())
 		}
-		out[k] = v.AsString()
+
+		out[k] = ctyToGo(v)
 	}
 
 	for _, b := range body.Blocks {
@@ -58,4 +60,42 @@ func hclBodyToMap(body *hclsyntax.Body) (map[string]any, error) {
 	}
 
 	return out, nil
+}
+
+
+func ctyToGo(v cty.Value) any {
+	if !v.IsKnown() || v.IsNull() {
+		return nil
+	}
+
+	switch v.Type() {
+	case cty.String:
+		return v.AsString()
+
+	case cty.Number:
+		i, _ := v.AsBigFloat().Int64()
+		return i
+
+	case cty.Bool:
+		return v.True()
+
+	default:
+		if v.Type().IsTupleType() || v.Type().IsListType() {
+			var out []any
+			for _, ev := range v.AsValueSlice() {
+				out = append(out, ctyToGo(ev))
+			}
+			return out
+		}
+
+		if v.Type().IsObjectType() || v.Type().IsMapType() {
+			out := map[string]any{}
+			for k, ev := range v.AsValueMap() {
+				out[k] = ctyToGo(ev)
+			}
+			return out
+		}
+	}
+
+	return nil
 }

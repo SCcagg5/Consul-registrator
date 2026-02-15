@@ -1,3 +1,8 @@
+include:
+  - path: consul/stack.yaml
+    env_file:
+      - .env
+
 services:
   consul-registrator:
     build:
@@ -6,11 +11,19 @@ services:
     container_name: consul-registrator
     restart: unless-stopped
     environment:
-      CONSUL_HTTP_ADDR: http://consul:8500
+      CONSUL_HTTP_ADDR: http://consul_node:8500
       CONSUL_HTTP_TOKEN: ${CONSUL_HTTP_TOKEN:-}
       STATE_PATH: /data/state.json
+      AGENT_ID: ${HOSTNAME}
+      CLEAN_INTERVAL: 30s
+      SIDECAR_ENABLED: "true"
+      SIDECAR_IMAGE: consul_proxy 
+      SIDECAR_CONSUL_HTTP: http://consul_node:8500
+      SIDECAR_CONSUL_GRPC: consul_node:8502
+      SIDECAR_GRPC_TLS: "false"
+      SIDECAR_PROMETHEUS_BIND_ADDR: "0.0.0.0:20200"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${DOCKER_SOCK_PATH:-/var/run/docker.sock}:/var/run/docker.sock:rw
       - consul-registrator-data:/data
     ports:
       - "9090:9090"
@@ -18,7 +31,7 @@ services:
     security_opt:
       - no-new-privileges:true
     depends_on:
-      consul:
+      consul_node:
         condition: service_healthy
     logging:
       options:

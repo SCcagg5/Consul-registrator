@@ -4,15 +4,18 @@ WORKDIR /src
 
 RUN apk add --no-cache ca-certificates
 
-COPY go.mod go.sum ./
+COPY src/go.mod ./
 RUN go mod download
 
-COPY . ./
+COPY src/ ./
+
+ARG TARGETOS
+ARG TARGETARCH
 
 RUN CGO_ENABLED=0 \
-    GOOS=linux \
-    GOARCH=amd64 \
-    go build -ldflags="-s -w" -o /out/consul-registrator
+    GOOS=${TARGETOS:-linux} \
+    GOARCH=${TARGETARCH:-amd64} \
+    go build -trimpath -ldflags="-s -w" -o /out/consul-registrator
 
 FROM scratch
 

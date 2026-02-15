@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -112,7 +114,8 @@ func (c *ConsulClient) do(ctx context.Context, method, path string, q url.Values
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		return http.ErrUseLastResponse
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("consul %s %s failed: %s: %s", method, u, resp.Status, strings.TrimSpace(string(b)))
 	}
 
 	return nil
@@ -149,7 +152,8 @@ func (c *ConsulClient) AgentServices(ctx context.Context) (map[string]AgentServi
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		return nil, http.ErrUseLastResponse
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("consul GET %s failed: %s: %s", u, resp.Status, strings.TrimSpace(string(b)))
 	}
 
 	var out map[string]AgentServiceInfo

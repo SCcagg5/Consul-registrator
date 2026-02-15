@@ -1,0 +1,50 @@
+services:
+  api:
+    image: nginx:alpine
+    container_name: api
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1"]
+      interval: 10s
+      timeout: 1s
+      retries: 3
+    labels:
+      consul.service.api: |
+        service {
+          name = "api"
+          port = 8080
+          connect {
+            sidecar_service {
+              auto = true
+            }
+          }
+        }
+      consul.sidecar.api: "enabled"
+
+  consul_node:
+    extends:
+      file: ./service.yaml
+      service: consul_node
+    environment:
+      CONSUL_SERVER: "true"
+      CONSUL_ALLOW_BOOTSTRAP: "true"
+    ports:
+      - 8500:8500
+
+  consul_node-2:
+    extends:
+      file: ./service.yaml
+      service: consul_node
+    container_name: consul_node-2
+    environment:
+      CONSUL_SERVER: "true"
+      CONSUL_ALLOW_BOOTSTRAP: "false"
+      CONSUL_NODE_NAME: "${CONSUL_NODE_NAME}-2"
+      CONSUL_PEERS: "consul_node"
+  
+  consul_proxy:
+    extends:
+        file: ./service.yaml
+        service: consul_proxy
+    container_name: consul_proxy_dummy
+    restart: no

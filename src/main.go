@@ -5,79 +5,102 @@ import (
 	"flag"
 	"log"
 	"os"
+	"strings"
 	"time"
 )
 
-/// main is the entry point of the Consul registrator agent.
 func main() {
-	consulAddr := requireEnv("CONSUL_HTTP_ADDR")
-	consulToken := envOr("CONSUL_HTTP_TOKEN", "")
-	dockerSock := envOr("DOCKER_SOCK", "/var/run/docker.sock")
-	statePath := envOr("STATE_PATH", "/var/lib/docker-consul-agent/state.json")
-	metricsAddr := envOr("METRICS_ADDR", ":9090")
+	var (
+		dockerSockEnv  = getenv("DOCKER_SOCKET", "/var/run/docker.sock")
+		consulAddrEnv  = getenv("CONSUL_HTTP_ADDR", "http://localhost:8500")
+		statePathEnv   = getenv("STATE_PATH", "/tmp/registrator-state.json")
+		metricsAddrEnv = getenv("METRICS_ADDR", ":9090")
+	)
 
-	agentID := envOr("AGENT_ID", "")
-	cleanIntervalStr := envOr("CLEAN_INTERVAL", "30s")
-
-	dryRunFlag := flag.Bool("dry-run", false, "dry run mode")
-	onceFlag := flag.Bool("once", false, "run a single reconciliation cycle")
-	healthcheckFlag := flag.Bool("healthcheck", false, "healthcheck mode")
+	var (
+		dockerSock      = flag.String("docker-socket", dockerSockEnv, "Docker socket path")
+		consulAddr      = flag.String("consul-addr", consulAddrEnv, "Consul HTTP address")
+		statePath       = flag.String("state", statePathEnv, "State file path")
+		metricsAddr     = flag.String("metrics-addr", metricsAddrEnv, "Prometheus metrics address")
+		onceFlag        = flag.Bool("once", false, "Run only one reconciliation loop")
+		healthcheckFlag = flag.Bool("healthcheck", false, "Exit 0 if registrator can reach Docker")
+	)
 	flag.Parse()
-
-	dryRun := *dryRunFlag || envBool("DRY_RUN")
-
-	if agentID == "" {
-		h, err := os.Hostname()
-		if err != nil || h == "" {
-			log.Fatal("AGENT_ID is required when hostname is unavailable")
-		}
-		agentID = h
-	}
-
-	cleanInterval, err := time.ParseDuration(cleanIntervalStr)
-	if err != nil || cleanInterval <= 0 {
-		log.Fatal("invalid CLEAN_INTERVAL")
-	}
 
 	if *healthcheckFlag {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-
-		docker := NewDockerClient(dockerSock, 2*time.Second)
-		_, derr := docker.ListContainers(ctx)
-		if derr != nil {
+		docker := NewDockerClient(*dockerSock, 2*time.Second)
+		if _, err := docker.ListContainers(ctx); err != nil {
 			os.Exit(1)
 		}
-
-		consul := NewConsulClient(consulAddr, consulToken, 2*time.Second, false)
-		cerr := consul.PassCheck(ctx, "consul-registrator-healthcheck", "", "healthcheck")
-		if cerr != nil {
-			os.Exit(1)
-		}
-
 		os.Exit(0)
 	}
 
+	ServeMetrics(*metricsAddr)
 	metrics := NewMetrics()
-	ServeMetrics(metricsAddr)
+	docker := NewDockerClient(*dockerSock, 5*time.Second)
+	consul := NewConsulClient(*consulAddr, "", 5*time.Second, false)
+	state, _ := LoadState(*statePath)
+	cfg := LoadConfig()
 
-	docker := NewDockerClient(dockerSock, 10*time.Second)
-	consul := NewConsulClient(consulAddr, consulToken, 10*time.Second, dryRun)
-
-	state, _ := LoadState(statePath)
-
-	agent := NewAgent(docker, consul, metrics, state, statePath, agentID)
+	agent := NewAgent(docker, consul, metrics, state, *statePath, cfg)
 
 	if *onceFlag {
 		_ = agent.RunOnce()
 		return
 	}
 
-	ctx := context.Background()
-	go agent.CleanLoop(ctx, cleanInterval)
-
 	for {
 		_ = agent.RunOnce()
 		time.Sleep(10 * time.Second)
 	}
+}
+
+func getenv(key, fallback string) string {
+	if val := os.Getenv(key); val != "" {
+		return val
+	}
+	return fallback
+}
+
+type Config struct {
+	SidecarEnabled  bool
+	SidecarImage    string
+	SidecarHttpAddr string
+	SidecarGrpcAddr string
+	SidecarGrpcTLS  bool
+	SidecarCAPath   string
+
+	// When set, registrator injects:
+	// connect.sidecar_service.proxy.config.envoy_prometheus_bind_addr
+	// so Envoy exposes /metrics for Prometheus.
+	// Set to "off"/"false"/"disabled" to disable injection.
+	SidecarPrometheusBindAddr string
+}
+
+func LoadConfig() *Config {
+	promBind := getenv("SIDECAR_PROMETHEUS_BIND_ADDR", "")
+	switch strings.ToLower(strings.TrimSpace(promBind)) {
+	case "", "0", "off", "false", "disabled":
+		promBind = ""
+	}
+
+	cfg := &Config{
+		SidecarEnabled:            os.Getenv("SIDECAR_ENABLED") == "true",
+		SidecarImage:              os.Getenv("SIDECAR_IMAGE"),
+		SidecarHttpAddr:           os.Getenv("SIDECAR_CONSUL_HTTP"),
+		SidecarGrpcAddr:           os.Getenv("SIDECAR_CONSUL_GRPC"),
+		SidecarGrpcTLS:            os.Getenv("SIDECAR_GRPC_TLS") == "true",
+		SidecarCAPath:             os.Getenv("SIDECAR_GRPC_CA_FILE"),
+		SidecarPrometheusBindAddr: promBind,
+	}
+	log.Printf("config: SIDECAR_ENABLED=%v", cfg.SidecarEnabled)
+	log.Printf("config: SIDECAR_IMAGE=%q", cfg.SidecarImage)
+	log.Printf("config: SIDECAR_CONSUL_HTTP=%q", cfg.SidecarHttpAddr)
+	log.Printf("config: SIDECAR_CONSUL_GRPC=%q", cfg.SidecarGrpcAddr)
+	log.Printf("config: SIDECAR_GRPC_TLS=%v", cfg.SidecarGrpcTLS)
+	log.Printf("config: SIDECAR_GRPC_CA_FILE=%q", cfg.SidecarCAPath)
+	log.Printf("config: SIDECAR_PROMETHEUS_BIND_ADDR=%q", cfg.SidecarPrometheusBindAddr)
+	return cfg
 }

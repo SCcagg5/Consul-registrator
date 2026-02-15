@@ -1,0 +1,6 @@
+include:
+  - path: stack.yaml
+    env_file:
+      - ../.env
+
+

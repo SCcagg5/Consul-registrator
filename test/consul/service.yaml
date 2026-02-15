@@ -1,0 +1,36 @@
+services:
+  consul_node:
+    image: consul_node
+    build:
+      context: ./
+      dockerfile: ./Dockerfile
+      target: consul_node
+    container_name: consul_node
+    restart: unless-stopped
+    environment:
+      CONSUL_SERVER: "true"
+      CONSUL_ALLOW_BOOTSTRAP: "true"
+      CONSUL_NODE_NAME: "${CONSUL_NODE_NAME}"
+      CONSUL_GOSSIP_KEY: "${CONSUL_GOSSIP_KEY}"
+    volumes:
+      - ./certs:/consul/tls/ca:ro
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+  
+  consul_proxy:
+    image: consul_proxy
+    build:
+      context: ./
+      dockerfile: ./Dockerfile
+      target: consul_proxy
+    restart: unless-stopped
+    environment:  
+      SERVICE_NAME: TO_SET
+      CONSUL_HTTP_ADDR: http://consul_node:8500
+      CONSUL_GRPC_ADDR: consul_node:8502
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"

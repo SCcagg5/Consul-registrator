@@ -2,21 +2,20 @@ package main
 
 import (
 	"net/http"
-
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-/// Metrics holds all Prometheus metrics exported by the agent.
 type Metrics struct {
-	Containers prometheus.Gauge
-	Services   prometheus.Gauge
-	TTLChecks  prometheus.Gauge
-	Events     prometheus.Counter
-	Errors     prometheus.Counter
+	Containers        prometheus.Gauge
+	Services          prometheus.Gauge
+	TTLChecks         prometheus.Gauge
+	Events            prometheus.Counter
+	Errors            prometheus.Counter
+	SidecarsLaunched  prometheus.Gauge
+	SidecarsDeleted   prometheus.Gauge
 }
 
-/// NewMetrics initializes and registers Prometheus metrics.
 func NewMetrics() *Metrics {
 	m := &Metrics{
 		Containers: prometheus.NewGauge(prometheus.GaugeOpts{
@@ -39,6 +38,14 @@ func NewMetrics() *Metrics {
 			Name: "dockconsul_errors_total",
 			Help: "Number of errors encountered",
 		}),
+		SidecarsLaunched: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "dockconsul_sidecars_launched",
+			Help: "Number of sidecar containers launched in last cycle",
+		}),
+		SidecarsDeleted: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "dockconsul_sidecars_deleted",
+			Help: "Number of orphan sidecar containers deleted in last cycle",
+		}),
 	}
 
 	prometheus.MustRegister(
@@ -47,12 +54,12 @@ func NewMetrics() *Metrics {
 		m.TTLChecks,
 		m.Events,
 		m.Errors,
+		m.SidecarsLaunched,
+		m.SidecarsDeleted,
 	)
-
 	return m
 }
 
-/// ServeMetrics starts an HTTP server exposing Prometheus metrics.
 func ServeMetrics(addr string) {
 	http.Handle("/metrics", promhttp.Handler())
 	go http.ListenAndServe(addr, nil)

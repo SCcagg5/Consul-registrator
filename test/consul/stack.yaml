@@ -12,7 +12,7 @@ services:
       consul.service.api: |
         service {
           name = "api"
-          port = 8080
+          port = 80
           connect {
             sidecar_service {
               auto = true

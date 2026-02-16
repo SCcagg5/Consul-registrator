@@ -9,7 +9,6 @@ import (
 	"github.com/zclconf/go-cty/cty"
 )
 
-/// ParseServiceHCL parses a Docker label containing a single Consul service block.
 func ParseServiceHCL(input string) (map[string]any, error) {
 	parser := hclparse.NewParser()
 	f, diags := parser.ParseHCL([]byte(input), "label.hcl")

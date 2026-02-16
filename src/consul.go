@@ -12,7 +12,6 @@ import (
 	"time"
 )
 
-/// ConsulClient provides minimal access to the Consul agent HTTP API.
 type ConsulClient struct {
 	base   string
 	token  string
@@ -20,7 +19,6 @@ type ConsulClient struct {
 	dryRun bool
 }
 
-/// NewConsulClient creates a Consul client.
 func NewConsulClient(addr, token string, timeout time.Duration, dryRun bool) *ConsulClient {
 	return &ConsulClient{
 		base:   strings.TrimRight(addr, "/"),
@@ -32,7 +30,6 @@ func NewConsulClient(addr, token string, timeout time.Duration, dryRun bool) *Co
 	}
 }
 
-/// RegisterService registers a Consul service unless dry-run is enabled.
 func (c *ConsulClient) RegisterService(ctx context.Context, def map[string]any) error {
 	if c.dryRun {
 		return nil
@@ -44,7 +41,6 @@ func (c *ConsulClient) RegisterService(ctx context.Context, def map[string]any) 
 	return c.do(ctx, "PUT", "/v1/agent/service/register", q, def)
 }
 
-/// DeregisterService deregisters a Consul service unless dry-run is enabled.
 func (c *ConsulClient) DeregisterService(ctx context.Context, id, ns, partition string) error {
 	if c.dryRun {
 		return nil
@@ -61,7 +57,6 @@ func (c *ConsulClient) DeregisterService(ctx context.Context, id, ns, partition 
 	return c.do(ctx, "PUT", "/v1/agent/service/deregister/"+url.PathEscape(id), q, nil)
 }
 
-/// PassCheck marks a TTL check as passing unless dry-run is enabled.
 func (c *ConsulClient) PassCheck(ctx context.Context, checkID, ns, note string) error {
 	if c.dryRun {
 		return nil
@@ -121,7 +116,6 @@ func (c *ConsulClient) do(ctx context.Context, method, path string, q url.Values
 	return nil
 }
 
-/// AgentServiceInfo represents a service returned by /v1/agent/services.
 type AgentServiceInfo struct {
 	ID        string            `json:"ID"`
 	Service   string            `json:"Service"`
@@ -130,7 +124,6 @@ type AgentServiceInfo struct {
 	Meta      map[string]string `json:"Meta"`
 }
 
-/// AgentServices returns all services known to the local Consul agent.
 func (c *ConsulClient) AgentServices(ctx context.Context) (map[string]AgentServiceInfo, error) {
 	if c.dryRun {
 		return map[string]AgentServiceInfo{}, nil

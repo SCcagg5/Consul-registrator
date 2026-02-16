@@ -71,10 +71,6 @@ type Config struct {
 	SidecarGrpcAddr  string
 	SidecarGrpcTLS   bool
 	SidecarCAPath    string
-
-	// If set, injects connect.sidecar_service.proxy.config.envoy_prometheus_bind_addr
-	// Example: "0.0.0.0:20200"
-	// Disable with: "off", "false", "disabled", "0", or empty.
 	SidecarPrometheusBindAddr string
 }
 

@@ -5,27 +5,33 @@ import (
 	"os"
 )
 
-/// State represents persisted agent state.
 type State struct {
-	Services map[string]bool `json:"services"`
+	Services      map[string]bool   `json:"services"`
+	ServiceHashes map[string]string `json:"service_hashes"`
 }
 
-/// LoadState loads state from disk.
 func LoadState(path string) (*State, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return &State{Services: map[string]bool{}}, nil
+		return &State{
+			Services:      map[string]bool{},
+			ServiceHashes: map[string]string{},
+		}, nil
 	}
 
 	var s State
 	err = json.Unmarshal(b, &s)
+
 	if s.Services == nil {
 		s.Services = map[string]bool{}
 	}
+	if s.ServiceHashes == nil {
+		s.ServiceHashes = map[string]string{}
+	}
+
 	return &s, err
 }
 
-/// SaveState saves state to disk.
 func SaveState(path string, s *State) error {
 	b, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {

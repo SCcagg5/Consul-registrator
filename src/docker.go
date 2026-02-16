@@ -13,12 +13,10 @@ import (
 	"time"
 )
 
-/// DockerClient provides minimal access to the Docker HTTP API.
 type DockerClient struct {
 	client *http.Client
 }
 
-/// NewDockerClient creates a Docker client bound to a Unix socket.
 func NewDockerClient(sock string, timeout time.Duration) *DockerClient {
 	tr := &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -33,14 +31,12 @@ func NewDockerClient(sock string, timeout time.Duration) *DockerClient {
 	}
 }
 
-/// DockerContainer represents a container summary.
 type DockerContainer struct {
 	ID     string            `json:"Id"`
 	State  string            `json:"State"`
 	Labels map[string]string `json:"Labels"`
 }
 
-/// DockerInspect represents a container inspection result.
 type DockerInspect struct {
 	ID   string `json:"Id"`
 	Name string `json:"Name"`
@@ -64,7 +60,6 @@ type DockerInspect struct {
 	} `json:"NetworkSettings"`
 }
 
-/// ListContainers lists Docker containers.
 func (d *DockerClient) ListContainers(ctx context.Context) ([]DockerContainer, error) {
 	q := url.Values{}
 	q.Set("all", "1")
@@ -80,7 +75,6 @@ func (d *DockerClient) ListContainers(ctx context.Context) ([]DockerContainer, e
 	return out, err
 }
 
-/// Inspect inspects a Docker container.
 func (d *DockerClient) Inspect(ctx context.Context, id string) (*DockerInspect, error) {
 	resp, err := d.do(ctx, "GET", "/containers/"+id+"/json", nil)
 	if err != nil {
@@ -106,7 +100,6 @@ func (d *DockerClient) do(ctx context.Context, method, path string, q url.Values
 	return d.client.Do(req)
 }
 
-/// ContainerExists returns whether a container can be inspected successfully.
 func (d *DockerClient) ContainerExists(ctx context.Context, id string) (bool, error) {
 	resp, err := d.do(ctx, "GET", "/containers/"+id+"/json", nil)
 	if err != nil {
@@ -123,8 +116,6 @@ func (d *DockerClient) ContainerExists(ctx context.Context, id string) (bool, er
 	return true, nil
 }
 
-/// StartContainer starts a container by ID or name.
-/// Docker returns 204 (started) or 304 (already started).
 func (d *DockerClient) StartContainer(ctx context.Context, idOrName string) error {
 	req, err := http.NewRequestWithContext(ctx, "POST", "http://unix/containers/"+idOrName+"/start", nil)
 	if err != nil {
@@ -147,7 +138,6 @@ func normalizeAddr(in string) string {
 	if in == "" {
 		return in
 	}
-	// Accept http(s)://host:port or host:port
 	if strings.Contains(in, "://") {
 		if u, err := url.Parse(in); err == nil && u.Host != "" {
 			return u.Host
@@ -158,15 +148,12 @@ func normalizeAddr(in string) string {
 	return in
 }
 
-/// LaunchSidecar creates and starts a new container as a sidecar proxy.
 func (d *DockerClient) LaunchSidecar(ctx context.Context, parentID, name, serviceID string, cfg *Config, needsNetAdmin bool) error {
 	containerName := "consul-sidecar-" + strings.ReplaceAll(serviceID, ":", "_")
 
 	grpcAddr := normalizeAddr(cfg.SidecarGrpcAddr)
 	httpAddr := strings.TrimSpace(cfg.SidecarHttpAddr)
 
-	// IMPORTANT: override image ENTRYPOINT, otherwise consul_proxy's /bin/entrypoint.sh runs
-	// and ignores our -sidecar-for <serviceID>.
 	entrypoint := []string{"/bin/sh", "-c"}
 	proxyServiceID := serviceID + "-sidecar-proxy"
 
@@ -240,7 +227,6 @@ func (d *DockerClient) LaunchSidecar(ctx context.Context, parentID, name, servic
 	}
 	defer r.Body.Close()
 
-	// 409 = name already exists. Treat as idempotent and ensure it is started.
 	if r.StatusCode == 409 {
 		return d.StartContainer(ctx, containerName)
 	}

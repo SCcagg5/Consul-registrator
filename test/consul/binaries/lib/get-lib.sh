@@ -35,3 +35,35 @@ cp -av /etc/ssl                                   "$ROOTFS/etc/"
 cp -av /usr/share/ca-certificates                 "$ROOTFS/usr/share/"
 tar -C "$ROOTFS" -czf /out/glibc-openssl-runtime-amd64.tgz .
 '
+
+docker run --rm --platform=linux/amd64 -v "$PWD:/out" alpine:3.21 sh -euxc '
+ROOT=/tmp/iptables-root
+rm -rf "$ROOT"
+mkdir -p "$ROOT"
+
+# Installe dans ROOT (pas dans le conteneur), avec les repos/keys de l image alpine:3.21
+apk add --no-cache --root "$ROOT" --initdb --no-scripts \
+  --keys-dir /etc/apk/keys --repositories-file /etc/apk/repositories \
+  iptables iptables-legacy
+
+# Force /bin/iptables pour Consul (nft par défaut)
+mkdir -p "$ROOT/bin"
+if [ -e "$ROOT/usr/sbin/iptables-nft" ]; then
+  ln -sf /usr/sbin/iptables-nft "$ROOT/bin/iptables"
+else
+  ln -sf /usr/sbin/iptables "$ROOT/bin/iptables"
+fi
+
+# Optionnel: exposer explicitement legacy si tu veux basculer facilement
+[ -e "$ROOT/usr/sbin/iptables-legacy" ] && ln -sf /usr/sbin/iptables-legacy "$ROOT/bin/iptables-legacy" || true
+
+# Sanity: vérifie que les libs critiques existent DANS le rootfs
+ls -l "$ROOT/usr/lib/libxtables.so.12"* "$ROOT/usr/lib/libmnl.so.0"* "$ROOT/usr/lib/libnftnl.so.11"* >/dev/null
+test -d "$ROOT/usr/lib/xtables"
+
+# Nettoyage (facultatif, pour réduire)
+rm -rf "$ROOT/var/cache/apk" "$ROOT/lib/apk" "$ROOT/usr/share/apk" "$ROOT/etc/apk"
+
+tar -C "$ROOT" -czf /out/iptables-runtime-amd64.tgz .
+ls -lh /out/iptables-runtime-amd64.tgz
+'

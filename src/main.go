@@ -18,12 +18,12 @@ func main() {
 	)
 
 	var (
-		dockerSock      = flag.String("docker-socket", dockerSockEnv, "Docker socket path")
-		consulAddr      = flag.String("consul-addr", consulAddrEnv, "Consul HTTP address")
-		statePath       = flag.String("state", statePathEnv, "State file path")
-		metricsAddr     = flag.String("metrics-addr", metricsAddrEnv, "Prometheus metrics address")
-		onceFlag        = flag.Bool("once", false, "Run only one reconciliation loop")
-		healthcheckFlag = flag.Bool("healthcheck", false, "Exit 0 if registrator can reach Docker")
+		dockerSock       = flag.String("docker-socket", dockerSockEnv, "Docker socket path")
+		consulAddr       = flag.String("consul-addr", consulAddrEnv, "Consul HTTP address")
+		statePath        = flag.String("state", statePathEnv, "State file path")
+		metricsAddr      = flag.String("metrics-addr", metricsAddrEnv, "Prometheus metrics address")
+		onceFlag         = flag.Bool("once", false, "Run only one reconciliation loop")
+		healthcheckFlag  = flag.Bool("healthcheck", false, "Exit 0 if registrator can reach Docker")
 	)
 	flag.Parse()
 
@@ -65,25 +65,25 @@ func getenv(key, fallback string) string {
 }
 
 type Config struct {
-	SidecarEnabled  bool
-	SidecarImage    string
-	SidecarHttpAddr string
-	SidecarGrpcAddr string
-	SidecarGrpcTLS  bool
-	SidecarCAPath   string
+	SidecarEnabled   bool
+	SidecarImage     string
+	SidecarHttpAddr  string
+	SidecarGrpcAddr  string
+	SidecarGrpcTLS   bool
+	SidecarCAPath    string
 
-	// When set, registrator injects:
-	// connect.sidecar_service.proxy.config.envoy_prometheus_bind_addr
-	// so Envoy exposes /metrics for Prometheus.
-	// Set to "off"/"false"/"disabled" to disable injection.
+	// If set, injects connect.sidecar_service.proxy.config.envoy_prometheus_bind_addr
+	// Example: "0.0.0.0:20200"
+	// Disable with: "off", "false", "disabled", "0", or empty.
 	SidecarPrometheusBindAddr string
 }
 
 func LoadConfig() *Config {
-	promBind := getenv("SIDECAR_PROMETHEUS_BIND_ADDR", "")
-	switch strings.ToLower(strings.TrimSpace(promBind)) {
+	prom := os.Getenv("SIDECAR_PROMETHEUS_BIND_ADDR")
+	prom = strings.TrimSpace(prom)
+	switch strings.ToLower(prom) {
 	case "", "0", "off", "false", "disabled":
-		promBind = ""
+		prom = ""
 	}
 
 	cfg := &Config{
@@ -93,8 +93,9 @@ func LoadConfig() *Config {
 		SidecarGrpcAddr:           os.Getenv("SIDECAR_CONSUL_GRPC"),
 		SidecarGrpcTLS:            os.Getenv("SIDECAR_GRPC_TLS") == "true",
 		SidecarCAPath:             os.Getenv("SIDECAR_GRPC_CA_FILE"),
-		SidecarPrometheusBindAddr: promBind,
+		SidecarPrometheusBindAddr: prom,
 	}
+
 	log.Printf("config: SIDECAR_ENABLED=%v", cfg.SidecarEnabled)
 	log.Printf("config: SIDECAR_IMAGE=%q", cfg.SidecarImage)
 	log.Printf("config: SIDECAR_CONSUL_HTTP=%q", cfg.SidecarHttpAddr)
@@ -102,5 +103,6 @@ func LoadConfig() *Config {
 	log.Printf("config: SIDECAR_GRPC_TLS=%v", cfg.SidecarGrpcTLS)
 	log.Printf("config: SIDECAR_GRPC_CA_FILE=%q", cfg.SidecarCAPath)
 	log.Printf("config: SIDECAR_PROMETHEUS_BIND_ADDR=%q", cfg.SidecarPrometheusBindAddr)
+
 	return cfg
 }

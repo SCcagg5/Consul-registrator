@@ -159,7 +159,7 @@ func normalizeAddr(in string) string {
 }
 
 /// LaunchSidecar creates and starts a new container as a sidecar proxy.
-func (d *DockerClient) LaunchSidecar(ctx context.Context, parentID, name, serviceID string, cfg *Config) error {
+func (d *DockerClient) LaunchSidecar(ctx context.Context, parentID, name, serviceID string, cfg *Config, needsNetAdmin bool) error {
 	containerName := "consul-sidecar-" + strings.ReplaceAll(serviceID, ":", "_")
 
 	grpcAddr := normalizeAddr(cfg.SidecarGrpcAddr)
@@ -167,20 +167,50 @@ func (d *DockerClient) LaunchSidecar(ctx context.Context, parentID, name, servic
 
 	// IMPORTANT: override image ENTRYPOINT, otherwise consul_proxy's /bin/entrypoint.sh runs
 	// and ignores our -sidecar-for <serviceID>.
-	entrypoint := []string{"/bin/consul"}
-	cmd := []string{
-		"connect", "envoy",
-		"-sidecar-for", serviceID,
-		"-admin-bind", "127.0.0.1:19000",
-		// Make /ready reachable from consul_node over the docker network
-		"-envoy-ready-bind-address", "0.0.0.0",
-		"-envoy-ready-bind-port", "19100",
-		"-grpc-addr", grpcAddr,
-		"-http-addr", httpAddr,
-	}
+	entrypoint := []string{"/bin/sh", "-c"}
+	proxyServiceID := serviceID + "-sidecar-proxy"
+
+	redirectCmd := fmt.Sprintf(
+	"consul connect redirect-traffic -proxy-id %s -proxy-uid 0 "+
+		"-exclude-inbound-port 19100 "+
+		"-exclude-inbound-port 20200",
+	proxyServiceID,
+	)
+
+	envoyCmd := fmt.Sprintf(
+		"consul connect envoy -sidecar-for %s "+
+			"-admin-bind 127.0.0.1:19000 "+
+			"-envoy-ready-bind-address 0.0.0.0 "+
+			"-envoy-ready-bind-port 19100 "+
+			"-grpc-addr %s "+
+			"-http-addr %s",
+		serviceID, grpcAddr, httpAddr,
+	)
+
 	if cfg.SidecarGrpcTLS && cfg.SidecarCAPath != "" {
-		cmd = append(cmd, "-grpc-ca-file", cfg.SidecarCAPath)
+		envoyCmd += fmt.Sprintf(" -grpc-ca-file %s", cfg.SidecarCAPath)
 	}
+
+	cmd := []string{
+		fmt.Sprintf("%s && %s", redirectCmd, envoyCmd),
+	}
+
+	hostConfig := map[string]interface{}{
+		"NetworkMode":   "container:" + parentID,
+		"RestartPolicy": map[string]string{"Name": "unless-stopped"},
+	}
+
+	if needsNetAdmin {
+		capAdd, _ := hostConfig["CapAdd"].([]string)
+		capAdd = append(capAdd, "NET_ADMIN")
+		hostConfig["CapAdd"] = capAdd
+
+		secOpt, _ := hostConfig["SecurityOpt"].([]string)
+		secOpt = append(secOpt, "no-new-privileges:true")
+		hostConfig["SecurityOpt"] = secOpt
+	}
+
+
 
 	config := map[string]interface{}{
 		"Image":      cfg.SidecarImage,
@@ -191,10 +221,7 @@ func (d *DockerClient) LaunchSidecar(ctx context.Context, parentID, name, servic
 			"CONSUL_HTTP_ADDR=" + httpAddr,
 			"CONSUL_GRPC_ADDR=" + grpcAddr,
 		},
-		"HostConfig": map[string]interface{}{
-			"NetworkMode":   "container:" + parentID,
-			"RestartPolicy": map[string]string{"Name": "unless-stopped"},
-		},
+		"HostConfig": hostConfig,
 		"Labels": map[string]string{
 			"consul-registrator": "sidecar",
 			"service-id":         serviceID,

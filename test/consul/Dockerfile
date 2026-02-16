@@ -43,6 +43,12 @@ HEALTHCHECK --interval=10s\
 
 FROM consul_base AS consul_proxy
 
+
+COPY ./binaries/lib/iptables-runtime-amd64.tgz /tmp/iptables.tgz
+RUN set -eux \
+    && tar -xzf /tmp/iptables.tgz -C / \
+    && rm -f /tmp/iptables.tgz
+
 ARG ENVOY_TGZ=envoy-v1.34.12-linux-x86_64.tgz
 COPY ./binaries/${ENVOY_TGZ} /tmp/envoy.tgz
 

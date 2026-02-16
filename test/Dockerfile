@@ -24,7 +24,11 @@ COPY --from=builder /out/consul-registrator /consul-registrator
 
 EXPOSE 9090
 
-HEALTHCHECK --interval=30s --timeout=3s --retries=3 \
-  CMD ["/consul-registrator", "--healthcheck"]
+HEALTHCHECK --interval=10s \
+            --timeout=1s \
+            --start-interval=500ms \
+            --start-period=5s \
+            --retries=3 \
+           CMD ["/consul-registrator", "--healthcheck"]
 
 ENTRYPOINT ["/consul-registrator"]

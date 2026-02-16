@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"encoding/json"
 )
 
 type Agent struct {
@@ -36,7 +37,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.metrics.Containers.Set(float64(len(containers)))
 	log.Printf("reconcile start containers=%d", len(containers))
 
-	// Index already-created sidecars so reconcile is idempotent.
+	// Index already created sidecars so reconcile is idempotent
 	sidecarsByServiceID := map[string]DockerContainer{}
 	for _, c := range containers {
 		if c.Labels["consul-registrator"] != "sidecar" {
@@ -56,7 +57,7 @@ func (a *Agent) Run(ctx context.Context) error {
 			continue
 		}
 
-		// Never reconcile sidecar containers as "services".
+		// Skip sidecar containers
 		if c.Labels["consul-registrator"] == "sidecar" {
 			continue
 		}
@@ -88,8 +89,23 @@ func (a *Agent) Run(ctx context.Context) error {
 			serviceID := insp.ID + ":" + svcName
 			svc["id"] = serviceID
 
-			// Apply sidecar defaults/auto behavior (checks + prometheus config) if connect.sidecar_service exists.
-			applySidecarAutoAndDefaults(svc, svcName, serviceID, insp, a.cfg)
+			if _, hasAddress := svc["address"]; !hasAddress {
+				if _, hasAddress := svc["Address"]; !hasAddress {
+					addr := resolveServiceAddress(insp, svcName)
+					if addr != "" {
+						svc["address"] = addr
+					}
+				}
+			}
+
+			sidecarKey := "consul.sidecar." + labelName
+			_, sidecarRequested := insp.Config.Labels[sidecarKey]
+
+			// Apply: auto=true => add checks; always normalize AliasService; optionally inject prometheus config
+			applySidecarAutoAndProm(svc, svcName, serviceID, a.cfg, sidecarRequested)
+			
+			b, _ := json.MarshalIndent(svc, "", "  ")
+			log.Printf("REGISTER PAYLOAD:\n%s", string(b))
 
 			err = a.consul.RegisterService(ctx, svc)
 			if err != nil {
@@ -101,39 +117,37 @@ func (a *Agent) Run(ctx context.Context) error {
 			found[serviceID] = true
 			log.Printf("container=%s registered service=%s id=%s", insp.ID, svcName, serviceID)
 
-			// Sidecar requested by label?
-			sidecarKey := "consul.sidecar." + labelName
-			if _, ok := insp.Config.Labels[sidecarKey]; !ok {
-				continue
-			}
-
-			if !a.cfg.SidecarEnabled {
-				log.Printf("container=%s sidecar requested but SIDECAR_ENABLED=false", insp.ID)
-				continue
-			}
-			if a.cfg.SidecarImage == "" || a.cfg.SidecarGrpcAddr == "" || a.cfg.SidecarHttpAddr == "" {
-				log.Printf("container=%s missing required sidecar config SIDECAR_IMAGE or GRPC/HTTP", insp.ID)
-				continue
-			}
-
-			// Already created?
-			if sc, ok := sidecarsByServiceID[serviceID]; ok {
-				if sc.State != "running" {
-					_ = a.docker.StartContainer(ctx, sc.ID) // best-effort
+			// Launch sidecar container if requested
+			if sidecarRequested {
+				if !a.cfg.SidecarEnabled {
+					log.Printf("container=%s sidecar requested but SIDECAR_ENABLED=false", insp.ID)
+					continue
 				}
-				continue
-			}
+				if a.cfg.SidecarImage == "" || a.cfg.SidecarGrpcAddr == "" || a.cfg.SidecarHttpAddr == "" {
+					log.Printf("container=%s missing required sidecar config SIDECAR_IMAGE or GRPC/HTTP", insp.ID)
+					continue
+				}
 
-			launchErr := a.docker.LaunchSidecar(ctx, insp.ID, labelName, serviceID, a.cfg)
-			if launchErr != nil {
-				log.Printf("container=%s sidecar failed: %v", insp.ID, launchErr)
-			} else {
-				log.Printf("container=%s sidecar launched for service=%s", insp.ID, labelName)
+				// already exists?
+				if sc, ok := sidecarsByServiceID[serviceID]; ok {
+					if sc.State != "running" {
+						_ = a.docker.StartContainer(ctx, sc.ID) // best-effort
+					}
+					continue
+				}
+
+				needsNetAdmin := sidecarNeedsTransparentProxy(svc)
+				launchErr := a.docker.LaunchSidecar(ctx, insp.ID, labelName, serviceID, a.cfg, needsNetAdmin)
+				if launchErr != nil {
+					log.Printf("container=%s sidecar failed: %v", insp.ID, launchErr)
+				} else {
+					log.Printf("container=%s sidecar launched for service=%s", insp.ID, labelName)
+				}
 			}
 		}
 	}
 
-	// Deregister stale services.
+	// Deregister stale services
 	for id := range a.state.Services {
 		if !found[id] {
 			_ = a.consul.DeregisterService(ctx, id, "", "")
@@ -142,7 +156,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		}
 	}
 
-	// Remove orphan sidecar containers.
+	// Remove orphan sidecars (service-id not present anymore)
 	for sid, sc := range sidecarsByServiceID {
 		if !found[sid] {
 			log.Printf("removing orphan sidecar container id=%s service-id=%s", sc.ID, sid)
@@ -154,13 +168,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	return SaveState(a.statePath, a.state)
 }
 
-// applySidecarAutoAndDefaults does 2 things:
-//
-// 1) If connect.sidecar_service.auto == true, it injects safe default checks so Consul doesn't add
-//    the default "tcp 127.0.0.1:<port>" check (which breaks when the agent and proxy are in different netns).
-//
-// 2) It injects proxy.config.envoy_prometheus_bind_addr by default so Envoy exposes a Prometheus scrape endpoint.
-func applySidecarAutoAndDefaults(svc map[string]any, serviceName, serviceID string, insp *DockerInspect, cfg *Config) {
+func applySidecarAutoAndProm(svc map[string]any, serviceName, serviceID string, cfg *Config, sidecarRequested bool) {
 	connect, ok := svc["connect"].(map[string]any)
 	if !ok {
 		return
@@ -170,81 +178,152 @@ func applySidecarAutoAndDefaults(svc map[string]any, serviceName, serviceID stri
 		return
 	}
 
-	// "auto" is a custom flag consumed by this registrator (not a Consul API field).
+	// read + delete custom auto flag (not a Consul field)
 	auto := false
-	if v, ok := sidecar["auto"].(bool); ok {
-		auto = v
+	if v, ok := sidecar["auto"]; ok {
+		auto = boolFromAny(v)
 		delete(sidecar, "auto")
-	} else if v, ok := sidecar["Auto"].(bool); ok {
-		auto = v
+	}
+	if v, ok := sidecar["Auto"]; ok {
+		auto = boolFromAny(v)
 		delete(sidecar, "Auto")
 	}
 
-	// Always normalize existing checks (supports snake_case from HCL) and rewrite AliasService placeholders.
-	normalizeSidecarChecks(sidecar, serviceName, serviceID)
+	// Normalize existing checks + fix AliasService to point to serviceID
+	checks := extractChecks(sidecar)
+	hasReady := false
+	hasAlias := false
 
-	// Enable Envoy Prometheus endpoint by default (one per container/netns).
-	if cfg != nil && cfg.SidecarPrometheusBindAddr != "" {
+	for i := range checks {
+		m, ok := checks[i].(map[string]any)
+		if !ok {
+			continue
+		}
+		normalizeCheckKeys(m)
+		rewriteAliasService(m, serviceName, serviceID)
+
+		if v, ok := m["HTTP"].(string); ok && strings.Contains(v, "/ready") {
+			hasReady = true
+		}
+		if v, ok := m["AliasService"].(string); ok && v != "" {
+			hasAlias = true
+		}
+	}
+
+	// If auto=true: ensure required checks exist (and override default Consul TCP 127.0.0.1 check behavior)
+	if auto {
+		if !hasReady {
+			checks = append(checks, map[string]any{
+				"Name":     "Envoy Ready",
+				"HTTP":     "http://" + serviceName + ":19100/ready",
+				"Interval": "10s",
+			})
+			checks = append(checks, map[string]any{
+				"Name":     "Envoy Ready",
+				"HTTP":     "http://" + serviceName + ":19100/ready",
+				"Interval": "10s",
+			})
+
+			checks := []map[string]any{
+		{
+			"Name":     "Envoy Ready",
+			"HTTP":     fmt.Sprintf("http://%s:19100/ready", checkHost),
+			"Method":   "GET",
+			"Interval": "10s",
+			"Timeout":  "2s",
+			// optionnel: évite le “passing” trop tôt
+			"SuccessBeforePassing": 2,
+		},
+		{
+			"Name":     "Envoy Metrics",
+			"HTTP":     fmt.Sprintf("http://%s:%d%s", checkHost, metricsPort, metricsPath), // default /metrics
+			"Method":   "GET",
+			"Interval": "30s",
+			"Timeout":  "2s",
+			"SuccessBeforePassing": 2,
+		},
+		}
+
+		}
+		if !hasAlias {
+			checks = append(checks, map[string]any{
+				"Name":         "Connect Sidecar Aliasing " + serviceName,
+				"AliasService": serviceID,
+			})
+		}
+
+		ensureTransparentProxy(sidecar)
+	}
+
+	// Write back checks in Consul API format
+	if len(checks) > 0 {
+		delete(sidecar, "check")
+		sidecar["checks"] = checks
+	}
+
+	// Inject Envoy Prometheus endpoint by default (only when sidecar is actually requested)
+	if sidecarRequested && cfg != nil && cfg.SidecarPrometheusBindAddr != "" {
 		ensureEnvoyPrometheus(sidecar, cfg.SidecarPrometheusBindAddr)
 	}
-
-	if !auto {
-		return
-	}
-
-	host := dockerResolvableName(insp, serviceName)
-	if host == "" {
-		host = containerIP(insp)
-	}
-	if host == "" {
-		return
-	}
-
-	readyURL := "http://" + host + ":19100/ready"
-
-	checks := getChecksSlice(sidecar)
-
-	if !hasReadyCheck(checks) {
-		checks = append(checks, map[string]any{
-			"Name":     "Envoy Ready",
-			"HTTP":     readyURL,
-			"Interval": "10s",
-		})
-	}
-
-	if !hasAliasCheck(checks) {
-		checks = append(checks, map[string]any{
-			"Name":         "Connect Sidecar Aliasing " + serviceName,
-			"AliasService": serviceID,
-		})
-	}
-
-	// Re-normalize after injection (ensures any placeholders are rewritten).
-	sidecar["checks"] = checks
-	normalizeSidecarChecks(sidecar, serviceName, serviceID)
 }
 
-func dockerResolvableName(insp *DockerInspect, fallback string) string {
-	// Docker inspect Name is like "/api" or "/project-api-1"
-	if insp != nil && insp.Name != "" {
-		n := strings.TrimPrefix(insp.Name, "/")
-		if n != "" {
-			return n
+func boolFromAny(v any) bool {
+	switch x := v.(type) {
+	case bool:
+		return x
+	case string:
+		switch strings.ToLower(strings.TrimSpace(x)) {
+		case "1", "true", "yes", "y", "on":
+			return true
 		}
+		return false
+	default:
+		return false
 	}
-	return fallback
 }
 
-func containerIP(insp *DockerInspect) string {
-	if insp == nil {
-		return ""
+func extractChecks(sidecar map[string]any) []any {
+	if raw, ok := sidecar["checks"].([]any); ok {
+		return raw
 	}
-	for _, n := range insp.NetworkSettings.Networks {
-		if n.IPAddress != "" {
-			return n.IPAddress
+	if one, ok := sidecar["check"].(map[string]any); ok {
+		return []any{one}
+	}
+	return []any{}
+}
+
+func normalizeCheckKeys(m map[string]any) {
+	rename := func(oldKey, newKey string) {
+		if v, ok := m[oldKey]; ok {
+			if _, exists := m[newKey]; !exists {
+				m[newKey] = v
+			}
+			delete(m, oldKey)
 		}
 	}
-	return ""
+
+	rename("name", "Name")
+	rename("http", "HTTP")
+	rename("tcp", "TCP")
+	rename("udp", "UDP")
+	rename("interval", "Interval")
+	rename("timeout", "Timeout")
+	rename("alias_service", "AliasService")
+	rename("alias_node", "AliasNode")
+}
+
+func rewriteAliasService(check map[string]any, serviceName, serviceID string) {
+	if v, ok := check["AliasService"].(string); ok {
+		if v == "" || v == serviceName || v == "$SERVICE_ID" || v == "${SERVICE_ID}" {
+			check["AliasService"] = serviceID
+		}
+	}
+	// if still snake_case
+	if v, ok := check["alias_service"].(string); ok {
+		if v == "" || v == serviceName || v == "$SERVICE_ID" || v == "${SERVICE_ID}" {
+			check["alias_service"] = serviceID
+		}
+	}
 }
 
 func ensureEnvoyPrometheus(sidecar map[string]any, bindAddr string) {
@@ -263,94 +342,62 @@ func ensureEnvoyPrometheus(sidecar map[string]any, bindAddr string) {
 	}
 }
 
-func getChecksSlice(sidecar map[string]any) []any {
-	if raw, ok := sidecar["checks"].([]any); ok {
-		return raw
+func resolveServiceAddress(insp *DockerInspect, fallback string) string {
+	// Prefer Docker container name (without leading "/")
+	if insp != nil {
+		name := strings.TrimPrefix(strings.TrimSpace(insp.Name), "/")
+		if name != "" {
+			return name
+		}
 	}
-	// Some users may define a single "check" object instead.
-	if one, ok := sidecar["check"].(map[string]any); ok {
-		return []any{one}
-	}
-	return []any{}
-}
 
-func normalizeSidecarChecks(sidecar map[string]any, serviceName, serviceID string) {
-	// checks: []map
-	if raw, ok := sidecar["checks"].([]any); ok {
-		for i, c := range raw {
-			m, ok := c.(map[string]any)
-			if !ok {
-				continue
+	// Fallback to provided name (usually svcName)
+	if fallback != "" {
+		return fallback
+	}
+
+	// Final fallback: first network IP
+	if insp != nil {
+		for _, net := range insp.NetworkSettings.Networks {
+			if net.IPAddress != "" {
+				return net.IPAddress
 			}
-			raw[i] = normalizeOneCheck(m, serviceName, serviceID)
 		}
-		sidecar["checks"] = raw
 	}
 
-	// check: map
-	if one, ok := sidecar["check"].(map[string]any); ok {
-		sidecar["check"] = normalizeOneCheck(one, serviceName, serviceID)
+	return ""
+}
+
+func ensureTransparentProxy(sidecar map[string]any) {
+	proxy, _ := sidecar["proxy"].(map[string]any)
+	if proxy == nil {
+		proxy = map[string]any{}
+		sidecar["proxy"] = proxy
+	}
+
+	if _, exists := proxy["TransparentProxy"]; !exists {
+		proxy["TransparentProxy"] = map[string]any{
+			"OutboundListenerPort": 15001,
+			// "InboundListenerPort": 15101,
+		}
+
 	}
 }
 
-func normalizeOneCheck(m map[string]any, serviceName, serviceID string) map[string]any {
-	rename := func(oldKey, newKey string) {
-		if v, ok := m[oldKey]; ok {
-			if _, exists := m[newKey]; !exists {
-				m[newKey] = v
-			}
-			delete(m, oldKey)
-		}
+func sidecarNeedsTransparentProxy(svc map[string]any) bool {
+	connect, ok := svc["connect"].(map[string]any)
+	if !ok {
+		return false
 	}
-
-	// Common snake_case -> Consul API casing
-	rename("name", "Name")
-	rename("http", "HTTP")
-	rename("tcp", "TCP")
-	rename("udp", "UDP")
-	rename("interval", "Interval")
-	rename("timeout", "Timeout")
-	rename("alias_service", "AliasService")
-	rename("alias_node", "AliasNode")
-
-	// AliasService should point to the parent service ID (not just the service name).
-	if v, ok := m["AliasService"].(string); ok {
-		if v == "" || v == serviceName || v == "$SERVICE_ID" || v == "${SERVICE_ID}" {
-			m["AliasService"] = serviceID
-		}
+	sidecar, ok := connect["sidecar_service"].(map[string]any)
+	if !ok {
+		return false
 	}
-
-	return m
+	proxy, ok := sidecar["proxy"].(map[string]any)
+	if !ok {
+		return false
+	}
+	_, hasTP := proxy["TransparentProxy"]
+	return hasTP
 }
 
-func hasReadyCheck(checks []any) bool {
-	for _, c := range checks {
-		m, ok := c.(map[string]any)
-		if !ok {
-			continue
-		}
-		if v, ok := m["HTTP"].(string); ok && strings.Contains(v, "/ready") {
-			return true
-		}
-		if v, ok := m["http"].(string); ok && strings.Contains(v, "/ready") {
-			return true
-		}
-	}
-	return false
-}
-
-func hasAliasCheck(checks []any) bool {
-	for _, c := range checks {
-		m, ok := c.(map[string]any)
-		if !ok {
-			continue
-		}
-		if _, ok := m["AliasService"]; ok {
-			return true
-		}
-		if _, ok := m["alias_service"]; ok {
-			return true
-		}
-	}
-	return false
-}

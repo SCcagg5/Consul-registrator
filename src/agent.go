@@ -103,7 +103,7 @@ func (a *Agent) Run(ctx context.Context) error {
 				continue
 			}
 
-			serviceID := insp.ID + ":" + svcName
+			serviceID := makeServiceID(insp.ID, svcName)
 			svc["id"] = serviceID
 
 			if _, hasAddress := svc["address"]; !hasAddress {
@@ -739,4 +739,13 @@ func injectTagsAndMeta(svc map[string]any, insp *DockerInspect, sidecarRequested
 	}
 
 	sidecar["tags"] = mergeTags(existingSidecarTags, sidecarInject...)
+}
+
+func makeServiceID(containerID, svcName string) string {
+	cid := strings.TrimSpace(containerID)
+
+	sum := sha256.Sum256([]byte(cid))
+	short := hex.EncodeToString(sum[:])[:9]
+
+	return svcName + ":" + short
 }

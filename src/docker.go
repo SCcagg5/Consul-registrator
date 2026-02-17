@@ -149,7 +149,7 @@ func normalizeAddr(in string) string {
 }
 
 func (d *DockerClient) LaunchSidecar(ctx context.Context, parentID, name, serviceID string, cfg *Config, needsNetAdmin bool) error {
-	containerName := "consul-sidecar-" + strings.ReplaceAll(serviceID, ":", "_")
+	containerName := "consul_sidecar-" + strings.ReplaceAll(serviceID, ":", "_")
 
 	grpcAddr := normalizeAddr(cfg.SidecarGrpcAddr)
 	httpAddr := strings.TrimSpace(cfg.SidecarHttpAddr)

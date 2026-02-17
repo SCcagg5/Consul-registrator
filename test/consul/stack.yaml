@@ -13,6 +13,9 @@ services:
         service {
           name = "api"
           port = 80
+          tags = [
+            "custom.custom=true"
+          ]
           connect {
             sidecar_service {
               auto = true
@@ -48,3 +51,5 @@ services:
         service: consul_proxy
     container_name: consul_proxy_dummy
     restart: no
+    environment:
+      DUMMY_MODE: "true"

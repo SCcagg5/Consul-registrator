@@ -157,11 +157,15 @@ func (d *DockerClient) LaunchSidecar(ctx context.Context, parentID, name, servic
 	entrypoint := []string{"/bin/sh", "-c"}
 	proxyServiceID := serviceID + "-sidecar-proxy"
 
+	proxyUID := 1337
+	proxyUser := "envoy"
+
 	redirectCmd := fmt.Sprintf(
-	"consul connect redirect-traffic -proxy-id %s -proxy-uid 0 "+
-		"-exclude-inbound-port 19100 "+
-		"-exclude-inbound-port 20200",
-	proxyServiceID,
+		"consul connect redirect-traffic -proxy-id %s -proxy-uid  %d "+
+			"-exclude-inbound-port 19100 "+
+			"-exclude-inbound-port 20200",
+		proxyServiceID,
+		proxyUID,
 	)
 
 	envoyCmd := fmt.Sprintf(
@@ -179,7 +183,15 @@ func (d *DockerClient) LaunchSidecar(ctx context.Context, parentID, name, servic
 	}
 
 	cmd := []string{
-		fmt.Sprintf("%s && %s", redirectCmd, envoyCmd),
+		fmt.Sprintf(
+			// crée l'user si besoin, applique iptables, puis lance envoy en non-root
+			"adduser -D -u %d %s 2>/dev/null || true; "+
+				"%s && su %s -s /bin/sh -c %q",
+			proxyUID, proxyUser,
+			redirectCmd,
+			proxyUser,
+			envoyCmd,
+		),
 	}
 
 	hostConfig := map[string]interface{}{

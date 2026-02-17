@@ -119,6 +119,8 @@ func (a *Agent) Run(ctx context.Context) error {
 			_, sidecarRequested := insp.Config.Labels[sidecarKey]
 			applySidecarAutoAndProm(svc, svcName, serviceID, a.cfg, sidecarRequested)
 			applyAutoTCPCheckOnServiceOrEnvoy(svc, svcName)
+			injectTagsAndMeta(svc, insp, sidecarRequested, a.cfg, serviceID)
+
 			found[serviceID] = true
 			payloadHash := hashServicePayload(svc)
 
@@ -604,4 +606,137 @@ func intFromAny(v any) int {
 	default:
 		return 0
 	}
+}
+
+func injectTagsAndMeta(svc map[string]any, insp *DockerInspect, sidecarRequested bool, cfg *Config, serviceID string) {
+	readTags := func(v any) []string {
+		switch x := v.(type) {
+		case []string:
+			out := make([]string, 0, len(x))
+			for _, s := range x {
+				s = strings.TrimSpace(s)
+				if s != "" {
+					out = append(out, s)
+				}
+			}
+			return out
+		case []any:
+			out := make([]string, 0, len(x))
+			for _, it := range x {
+				if s, ok := it.(string); ok {
+					s = strings.TrimSpace(s)
+					if s != "" {
+						out = append(out, s)
+					}
+				}
+			}
+			return out
+		default:
+			return nil
+		}
+	}
+
+	mergeTags := func(existing []string, inject ...string) []string {
+		seen := make(map[string]struct{}, len(existing)+len(inject))
+		out := make([]string, 0, len(existing)+len(inject))
+
+		add := func(s string) {
+			s = strings.TrimSpace(s)
+			if s == "" {
+				return
+			}
+			if _, ok := seen[s]; ok {
+				return
+			}
+			seen[s] = struct{}{}
+			out = append(out, s)
+		}
+
+		for _, s := range existing {
+			add(s)
+		}
+		for _, s := range inject {
+			add(s)
+		}
+		return out
+	}
+
+	existingSvcTags := readTags(svc["Tags"])
+
+	inject := []string{
+		"consul-registrator.managed=true",
+		"consul-registrator.container.system=docker",
+		"consul-registrator.service.id=" + serviceID,
+	}
+
+	if insp != nil {
+		cid := strings.TrimSpace(insp.ID)
+		if cid != "" {
+			inject = append(inject, "consul-registrator.container.id="+cid)
+		}
+		cname := strings.TrimPrefix(strings.TrimSpace(insp.Name), "/")
+		if cname != "" {
+			inject = append(inject, "consul-registrator.container.name="+cname)
+		}
+	}
+
+	if connect, ok := svc["connect"].(map[string]any); ok && connect != nil {
+		if _, ok := connect["sidecar_service"].(map[string]any); ok {
+			inject = append(inject, "consul-registrator.mesh=connect")
+		}
+	}
+
+	if sidecarRequested {
+		inject = append(inject, "consul-registrator.proxy.enabled=true")
+		if sidecarNeedsTransparentProxy(svc) {
+			inject = append(inject, "consul-registrator.transparent-proxy.enabled=true")
+		} else {
+			inject = append(inject, "consul-registrator.transparent-proxy.enabled=false")
+		}
+		if cfg != nil && strings.TrimSpace(cfg.SidecarPrometheusBindAddr) != "" {
+			inject = append(inject, "consul-registrator.metrics.sidecar=enabled")
+		}
+		inject = append(inject, "consul-registrator.proxy.service-id="+serviceID+"-sidecar-proxy")
+	} else {
+		inject = append(inject, "consul-registrator.proxy.enabled=false")
+	}
+
+	svc["Tags"] = mergeTags(existingSvcTags, inject...)
+
+	connect, _ := svc["connect"].(map[string]any)
+	if connect == nil {
+		return
+	}
+	sidecar, _ := connect["sidecar_service"].(map[string]any)
+	if sidecar == nil {
+		return
+	}
+
+	existingSidecarTags := readTags(sidecar["tags"])
+
+	sidecarInject := []string{
+		"consul-registrator.managed=true",
+		"consul-registrator.proxy=envoy",
+	}
+	if sidecarNeedsTransparentProxy(svc) {
+		sidecarInject = append(sidecarInject, "consul-registrator.transparent-proxy.enabled=true")
+	} else {
+		sidecarInject = append(sidecarInject, "consul-registrator.transparent-proxy.enabled=false")
+	}
+	sidecarHasMetrics := false
+	if cfg != nil && strings.TrimSpace(cfg.SidecarPrometheusBindAddr) != "" {
+		sidecarHasMetrics = true
+	}
+	if pxy, _ := sidecar["proxy"].(map[string]any); pxy != nil {
+		if cfgmap, _ := pxy["config"].(map[string]any); cfgmap != nil {
+			if v, ok := cfgmap["envoy_prometheus_bind_addr"].(string); ok && strings.TrimSpace(v) != "" {
+				sidecarHasMetrics = true
+			}
+		}
+	}
+	if sidecarHasMetrics {
+		sidecarInject = append(sidecarInject, "consul-registrator.metrics.sidecar=enabled")
+	}
+
+	sidecar["tags"] = mergeTags(existingSidecarTags, sidecarInject...)
 }
